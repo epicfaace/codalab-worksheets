@@ -51,7 +51,7 @@ class SampleWorksheet:
             self._entities_count = 100
         else:
             self._description = 'small'
-            self._entities_count = 3
+            self._entities_count = 1
         self._cl = cl
         self._preview_mode = preview_mode
         self._worksheet_name = 'cl_{}_worksheet'.format(self._description)
@@ -71,10 +71,6 @@ class SampleWorksheet:
                     self._worksheet_name, worksheet_uuids[0]
                 )
             )
-            self._valid_worksheets = []
-            self._private_worksheets = []
-            self._valid_bundles = []
-            self._private_bundles = []
             return
 
         print('Creating a {} worksheet...'.format(self._description))
@@ -92,15 +88,19 @@ class SampleWorksheet:
 
     def test_print(self):
         self._wait_for_bundles_to_finish()
+        print('\n\nValidating output of cl print {}...'.format(self._worksheet_name))
         output_lines = run_command([self._cl, 'print', self._worksheet_name]).split('\n')
         has_error = False
         for i in range(len(self._expected_lines)):
-            if not re.match(self._expected_lines[i], output_lines[i]):
+            line = str(i + 1).zfill(5)
+            if re.match(self._expected_lines[i], output_lines[i]):
+                print('\x1b[1;34m{}| {}\x1b[0m'.format(line, output_lines[i]))
+            else:
                 has_error = True
                 # Output mismatch message in red
                 print(
-                    '\033[91mMISMATCH! line: {} pattern: {} output: {}\033[0m'.format(
-                        i + 1, self._expected_lines[i], output_lines[i]
+                    '\033[91m{}| {} EXPECTED: {} \033[0m'.format(
+                        line, output_lines[i], self._expected_lines[i]
                     )
                 )
 
@@ -139,18 +139,17 @@ class SampleWorksheet:
             name = 'valid_worksheet_%s' % id
             title = 'Other Worksheet %s' % id
             self._valid_worksheets.append(self._create_tagged_worksheet(name, title))
-            self._valid_bundles.append(
-                run_command(
-                    [
-                        self._cl,
-                        'run',
-                        'echo codalab rules!',
-                        '--tags=%s' % SampleWorksheet.TAG,
-                        '--request-memory',
-                        '10m',
-                    ]
-                )
+            uuid = run_command(
+                [
+                    self._cl,
+                    'run',
+                    '--request-memory',
+                    '10m',
+                    'echo codalab rules!',
+                    '--tags=%s' % SampleWorksheet.TAG,
+                ]
             )
+            self._valid_bundles.append(uuid)
             # Create a valid private worksheet and a bundle each
             name = 'valid_private_worksheet_%s' % id
             title = 'Other Private Worksheet %s' % id
@@ -161,10 +160,10 @@ class SampleWorksheet:
                 [
                     self._cl,
                     'run',
-                    'echo private run',
-                    '--tags=%s' % SampleWorksheet.TAG,
                     '--request-memory',
                     '10m',
+                    'echo private run',
+                    '--tags=%s' % SampleWorksheet.TAG,
                 ]
             )
             run_command([self._cl, 'perm', uuid, 'public', 'none'])
@@ -397,7 +396,7 @@ class SampleWorksheet:
         self._add_line('% add owner owner_name')
         self._add_line('% add created created date')
         self._add_line('% display table recently_created_schema')
-        self._add_line('% search created=.sort- .limit={}'.format(self._entities_count))
+        self._add_line('% search .mine .limit={}'.format(self._entities_count))
         self._add_table_pattern(['name', 'owner', 'created'], self._entities_count)
 
     def _add_invalid_directives(self):

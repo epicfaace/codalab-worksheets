@@ -17,15 +17,13 @@ Things not tested:
 """
 
 from collections import namedtuple, OrderedDict
-import concurrent.futures
-from contextlib import contextmanager, redirect_stdout
+from contextlib import contextmanager
 from codalab.worker.download_util import BundleTarget
 from codalab.worker.bundle_state import State
 from scripts.create_sample_worksheet import SampleWorksheet
 from scripts.test_util import Colorizer, run_command
 
 import argparse
-import io
 import json
 import os
 import random
@@ -112,7 +110,7 @@ def get_info(uuid, key):
     return _run_command([cl, 'info', '-f', key, uuid])
 
 
-def wait_until_state(uuid, expected_state, timeout_seconds=100):
+def wait_until_state(uuid, expected_state, timeout_seconds=1000):
     """
     Waits until a bundle in in the expected state or one of the final states. If a bundle is
     in one of the final states that is not the expected_state, fail earlier than the timeout.
@@ -140,7 +138,7 @@ def wait_until_state(uuid, expected_state, timeout_seconds=100):
         time.sleep(0.5)
 
 
-def wait_for_contents(uuid, substring, timeout_seconds=100):
+def wait_for_contents(uuid, substring, timeout_seconds=1000):
     start_time = time.time()
     while True:
         if time.time() - start_time > timeout_seconds:
@@ -206,12 +204,40 @@ def _run_command(
     include_stderr=False,
     binary=False,
     force_subprocess=False,
+    request_memory="4m",
+    request_disk="1m",
+    request_time=None,
 ):
-    # We skip using the cli directly if force_subprocess is set to true (which forces
-    # us to use subprocess even for cl commands).
+    """Runs a command.
+
+    Args:
+        args ([str]): Arguments of function.
+        expected_exit_code (int, optional): Expected exit code. Defaults to 0.
+        max_output_chars (int, optional): Truncates output printed to the console log to this number. Defaults to 4096.
+        env ([type], optional): Environment variables. Defaults to None.
+        include_stderr (bool, optional): Include stderr in output. Defaults to False.
+        binary (bool, optional): Whether output is binary. Defaults to False.
+        force_subprocess (bool, optional): Force "cl" commands to run with subprocess, rather than running the CodaLab CLI directly through Python. Defaults to False.
+        request_memory (str, optional): Value of the --request-memory argument passed to "cl run" commands. Defaults to "4m".
+        request_disk (str, optional): Value of the --request-memory argument passed to "cl run" commands. Defaults to "1m". request_time=None.
+        request_time (str, optional): Value of the --request-time argument passed to "cl run" commands. Defaults to None (no argument is passed). request_time=None.
+
+    Returns:
+        str: Command output.
+    """
     if args[0] == cl:
-        force_subprocess = force_subprocess if args[0] == cl else True
+        if len(args) > 1 and args[1] == 'run':
+            if request_memory:
+                args.insert(2, request_memory)
+                args.insert(2, "--request-memory")
+            if request_disk:
+                args.insert(2, request_disk)
+                args.insert(2, "--request-disk")
+            if request_time:
+                args.insert(2, request_time)
+                args.insert(2, "--request-time")
     else:
+        # Always use subprocess for non-"cl" commands.
         force_subprocess = True
     return run_command(
         args, expected_exit_code, max_output_chars, env, include_stderr, binary, force_subprocess
@@ -299,38 +325,36 @@ class ModuleContext(object):
             print(Colorizer.green("[*] TEST PASSED"))
 
         # Clean up and restore original worksheet
-        # time.sleep(5)
         print("[*][*] CLEANING UP")
-        return True
-        # os.environ.clear()
-        # os.environ.update(self.original_environ)
+        os.environ.clear()
+        os.environ.update(self.original_environ)
 
-        # _run_command([cl, 'work', self.original_worksheet])
-        # for worksheet in self.worksheets:
-        #     self.bundles.extend(_run_command([cl, 'ls', '-w', worksheet, '-u']).split())
-        #     _run_command([cl, 'wrm', '--force', worksheet])
+        _run_command([cl, 'work', self.original_worksheet])
+        for worksheet in self.worksheets:
+            self.bundles.extend(_run_command([cl, 'ls', '-w', worksheet, '-u']).split())
+            _run_command([cl, 'wrm', '--force', worksheet])
 
-        # # Delete all bundles (kill and dedup first)
-        # if len(self.bundles) > 0:
-        #     for bundle in set(self.bundles):
-        #         try:
-        #             if _run_command([cl, 'info', '-f', 'state', bundle]) not in State.FINAL_STATES:
-        #                 _run_command([cl, 'kill', bundle])
-        #                 _run_command([cl, 'wait', bundle], expected_exit_code=1)
-        #         except AssertionError:
-        #             print('CAUGHT')
-        #             pass
-        #         _run_command([cl, 'rm', '--force', bundle])
+        # Delete all bundles (kill and dedup first)
+        if len(self.bundles) > 0:
+            for bundle in set(self.bundles):
+                try:
+                    if _run_command([cl, 'info', '-f', 'state', bundle]) not in State.FINAL_STATES:
+                        _run_command([cl, 'kill', bundle])
+                        _run_command([cl, 'wait', bundle], expected_exit_code=1)
+                except AssertionError:
+                    print('CAUGHT')
+                    pass
+                _run_command([cl, 'rm', '--force', bundle])
 
-        # # Delete all groups (dedup first)
-        # if len(self.groups) > 0:
-        #     _run_command([cl, 'grm'] + list(set(self.groups)))
+        # Delete all groups (dedup first)
+        if len(self.groups) > 0:
+            _run_command([cl, 'grm'] + list(set(self.groups)))
 
-        # # Reraise only KeyboardInterrupt
-        # if exc_type is KeyboardInterrupt:
-        #     return False
-        # else:
-        #     return True
+        # Reraise only KeyboardInterrupt
+        if exc_type is KeyboardInterrupt:
+            return False
+        else:
+            return True
 
     def collect_worksheet(self, uuid):
         """Mark a worksheet for cleanup on exit."""
@@ -472,7 +496,7 @@ def test(ctx):
     """Generate the readthedocs site."""
     # Make sure there are no extraneous things.
     # mkdocs doesn't return exit code 1 for some warnings.
-    check_num_lines(2, _run_command(['mkdocs', 'build', '-d', '/tmp/site'], include_stderr=True))
+    check_num_lines(3, _run_command(['mkdocs', 'build', '-d', '/tmp/site'], include_stderr=True))
 
 
 @TestModule.register('basic')
@@ -766,8 +790,6 @@ def test(ctx):
     # ls
     check_equals('', _run_command([cl, 'ls', '-u']))
     uuid = _run_command([cl, 'upload', test_path('a.txt')])
-    _run_command([cl, 'print'])
-    _run_command([cl, 'ls'])
     check_equals(uuid, _run_command([cl, 'ls', '-u']))
     # create worksheet
     check_contains(uuid[0:5], _run_command([cl, 'ls']))
@@ -785,17 +807,12 @@ def test(ctx):
     _run_command(
         [cl, 'add', 'bundle', uuid, '--dest-worksheet', wuuid]
     )  # not testing real copying ability
-    time.sleep(5)
     _run_command([cl, 'add', 'worksheet', wuuid])
-    time.sleep(5)
     check_contains(
         ['Worksheet', 'testing', '你好世界😊', test_path_contents('a.txt'), uuid, 'HEAD', 'CREATE'],
         _run_command([cl, 'print']),
     )
-    # Sleep so that wadd happens properly
-    time.sleep(5)
     _run_command([cl, 'wadd', wuuid, wuuid])
-    time.sleep(5)
     check_num_lines(8, _run_command([cl, 'ls', '-u']))
     _run_command([cl, 'wedit', wuuid, '--name', wname + '2'])
 
@@ -943,9 +960,7 @@ def test(ctx):
     )
     # Check search by group
     group_bname = random_name()
-    group_buuid = _run_command(
-        [cl, 'run', 'echo hello', '-n', group_bname, '--request-memory', '10m']
-    )
+    group_buuid = _run_command([cl, 'run', 'echo hello', '-n', group_bname])
     wait(group_buuid)
     ctx.collect_bundle(group_buuid)
     user_id, user_name = current_user()
@@ -969,48 +984,51 @@ def test(ctx):
     # These sleeps are required to ensure that there is sufficient time that passes between tests
     # If there is not enough time, all bundles might appear to have the same time
     time.sleep(1)
-    uuid1 = run_command([cl, 'run', 'date', '-n', name])
+    uuid1 = _run_command([cl, 'run', 'date', '-n', name])
+    wait(uuid1)
     time.sleep(1)
     time2 = datetime.now().isoformat()
     time.sleep(1)
-    uuid2 = run_command([cl, 'run', 'date', '-n', name])
-    uuid3 = run_command([cl, 'run', 'date', '-n', name])
+    uuid2 = _run_command([cl, 'run', 'date', '-n', name])
+    wait(uuid2)
+    uuid3 = _run_command([cl, 'run', 'date', '-n', name])
+    wait(uuid3)
     time.sleep(1)
     time3 = datetime.now().isoformat()
 
     # No results
-    check_equals('', run_command([cl, 'search', 'name=' + name, '.before=' + time1, '-u']))
-    check_equals('', run_command([cl, 'search', 'name=' + name, '.after=' + time3, '-u']))
+    check_equals('', _run_command([cl, 'search', 'name=' + name, '.before=' + time1, '-u']))
+    check_equals('', _run_command([cl, 'search', 'name=' + name, '.after=' + time3, '-u']))
 
     # Before
     check_equals(
-        uuid1, run_command([cl, 'search', 'name=' + name, '.before=' + time2, 'id=.sort', '-u'])
+        uuid1, _run_command([cl, 'search', 'name=' + name, '.before=' + time2, 'id=.sort', '-u'])
     )
     check_equals(
         uuid1 + '\n' + uuid2 + '\n' + uuid3,
-        run_command([cl, 'search', 'name=' + name, '.before=' + time3, 'id=.sort', '-u']),
+        _run_command([cl, 'search', 'name=' + name, '.before=' + time3, 'id=.sort', '-u']),
     )
 
     # After
     check_equals(
         uuid1 + '\n' + uuid2 + '\n' + uuid3,
-        run_command([cl, 'search', 'name=' + name, '.after=' + time1, 'id=.sort', '-u']),
+        _run_command([cl, 'search', 'name=' + name, '.after=' + time1, 'id=.sort', '-u']),
     )
     check_equals(
         uuid2 + '\n' + uuid3,
-        run_command([cl, 'search', 'name=' + name, '.after=' + time2, 'id=.sort', '-u']),
+        _run_command([cl, 'search', 'name=' + name, '.after=' + time2, 'id=.sort', '-u']),
     )
 
     # Before And After
     check_equals(
         uuid1,
-        run_command(
+        _run_command(
             [cl, 'search', 'name=' + name, '.after=' + time1, '.before=' + time2, 'id=.sort', '-u']
         ),
     )
     check_equals(
         uuid2 + '\n' + uuid3,
-        run_command(
+        _run_command(
             [cl, 'search', 'name=' + name, '.after=' + time2, '.before=' + time3, 'id=.sort', '-u']
         ),
     )
@@ -1018,136 +1036,176 @@ def test(ctx):
 
 @TestModule.register('run')
 def test(ctx):
-    def test_run_basic():
-        name = random_name()
-        uuid = _run_command([cl, 'run', 'echo hello', '-n', name, '--request-memory', '10m'])
-        print('Waiting echo hello with uuid %s' % uuid)
-        wait(uuid)
+    name = random_name()
+    uuid = _run_command([cl, 'run', 'echo hello', '-n', name])
+    wait(uuid)
+    return
+    check_contains('0x', get_info(uuid, 'data_hash'))
 
-        # run and check the data_hash
-        check_contains('0x', get_info(uuid, 'data_hash'))
+    # test search
+    check_contains(name, _run_command([cl, 'search', name]))
+    check_equals(uuid, _run_command([cl, 'search', name, '-u']))
+    _run_command([cl, 'search', name, '--append'])
+    # test download stdout
+    path = temp_path('')
+    _run_command([cl, 'download', uuid + '/stdout', '-o', path])
+    check_equals('hello', path_contents(path))
+    # get info
+    check_equals(State.READY, _run_command([cl, 'info', '-f', 'state', uuid]))
+    check_contains(['run "echo hello"'], _run_command([cl, 'info', '-f', 'args', uuid]))
+    check_equals('hello', _run_command([cl, 'cat', uuid + '/stdout']))
+    # block
+    # TODO: Uncomment this when the tail bug is figured out
+    # check_contains('hello', _run_command([cl, 'run', 'echo hello', '--tail']))
 
-        # test search
-        check_contains(name, _run_command([cl, 'search', name]))
-        check_equals(uuid, _run_command([cl, 'search', name, '-u']))
-        _run_command([cl, 'search', name, '--append'])
+    # make sure special characters in the name of a bundle don't break
+    special_name = random_name() + '-dashed.dotted'
+    _run_command([cl, 'run', 'echo hello', '-n', special_name])
+    dependent = _run_command([cl, 'run', ':%s' % special_name, 'cat %s/stdout' % special_name])
+    wait(dependent)
+    check_equals('hello', _run_command([cl, 'cat', dependent + '/stdout']))
 
-        # test download stdout
-        path = temp_path('')
-        _run_command([cl, 'download', uuid + '/stdout', '-o', path])
-        check_equals('hello', path_contents(path))
+    # test running with a reference to this worksheet
+    source_worksheet_full = current_worksheet()
+    source_worksheet_name = source_worksheet_full.split("::")[1]
 
-        # get info
-        check_equals(State.READY, _run_command([cl, 'info', '-f', 'state', uuid]))
-        check_contains(['run "echo hello"'], _run_command([cl, 'info', '-f', 'args', uuid]))
-        check_equals('hello', _run_command([cl, 'cat', uuid + '/stdout']))
+    # Create new worksheet
+    new_wname = random_name()
+    new_wuuid = _run_command([cl, 'new', new_wname])
+    ctx.collect_worksheet(new_wuuid)
+    check_contains(['Switched', new_wname, new_wuuid], _run_command([cl, 'work', new_wuuid]))
 
-        # invalid child path
-        _run_command([cl, 'run', 'not/allowed:' + uuid, 'date'], expected_exit_code=1)
+    remote_name = random_name()
+    remote_uuid = _run_command(
+        [
+            cl,
+            'run',
+            'source:{}//{}'.format(source_worksheet_name, name),
+            "cat source/stdout",
+            '-n',
+            remote_name,
+        ]
+    )
+    wait(remote_uuid)
+    check_contains(remote_name, _run_command([cl, 'search', remote_name]))
+    check_equals(remote_uuid, _run_command([cl, 'search', remote_name, '-u']))
+    check_equals('hello', _run_command([cl, 'cat', remote_uuid + '/stdout']))
 
-        # test running with a reference to this worksheet
-        source_worksheet_full = current_worksheet()
-        source_worksheet_name = source_worksheet_full.split("::")[1]
+    sugared_remote_name = random_name()
+    sugared_remote_uuid = _run_command(
+        [
+            cl,
+            'run',
+            'cat %{}//{}%/stdout'.format(source_worksheet_name, name),
+            '-n',
+            sugared_remote_name,
+        ]
+    )
+    wait(sugared_remote_uuid)
+    check_contains(sugared_remote_name, _run_command([cl, 'search', sugared_remote_name]))
+    check_equals(sugared_remote_uuid, _run_command([cl, 'search', sugared_remote_name, '-u']))
+    check_equals('hello', _run_command([cl, 'cat', sugared_remote_uuid + '/stdout']))
 
-        remote_name = random_name()
-        remote_uuid = _run_command(
-            [
-                cl,
-                'run',
-                'source:{}//{}'.format(source_worksheet_name, name),
-                "cat source/stdout",
-                '-n',
-                remote_name,
-                '--request-memory',
-                '10m',
-            ]
-        )
-        wait(remote_uuid)
-        check_contains(remote_name, _run_command([cl, 'search', remote_name]))
-        check_equals(remote_uuid, _run_command([cl, 'search', remote_name, '-u']))
-        check_equals('hello', _run_command([cl, 'cat', remote_uuid + '/stdout']))
+    # Explicitly fail when a remote instance name with : in it is supplied
+    _run_command(
+        [cl, 'run', 'cat %%%s//%s%%/stdout' % (source_worksheet_full, name)], expected_exit_code=1
+    )
 
-        # Explicitly fail when a remote instance name with : in it is supplied
-        _run_command(
-            [cl, 'run', 'cat %%%s//%s%%/stdout' % (source_worksheet_full, name)],
-            expected_exit_code=1,
-        )
+    # Test multiple keys pointing to the same bundle
+    multi_alias_uuid = _run_command(
+        [
+            cl,
+            'run',
+            'foo:{}'.format(uuid),
+            'foo1:{}'.format(uuid),
+            'foo2:{}'.format(uuid),
+            'echo "three aliases"',
+        ]
+    )
+    wait(multi_alias_uuid)
+    check_equals('three aliases', _run_command([cl, 'cat', multi_alias_uuid + '/stdout']))
+    check_equals('hello', _run_command([cl, 'cat', multi_alias_uuid + '/foo/stdout']))
+    check_equals('hello', _run_command([cl, 'cat', multi_alias_uuid + '/foo1/stdout']))
+    check_equals('hello', _run_command([cl, 'cat', multi_alias_uuid + '/foo2/stdout']))
 
-    def test_run_special_name():
-        # block
-        # TODO: Uncomment this when the tail bug is figured out
-        # check_contains('hello', _run_command([cl, 'run', 'echo hello', '--tail']))
-        # make sure special characters in the name of a bundle don't break
-        special_name = random_name() + '-dashed.dotted'
-        _run_command([cl, 'run', 'echo hello', '-n', special_name])
-        dependent = _run_command(
-            [
-                cl,
-                'run',
-                ':%s' % special_name,
-                'cat %s/stdout' % special_name,
-                '--request-memory',
-                '10m',
-            ]
-        )
-        wait(dependent)
-        check_equals('hello', _run_command([cl, 'cat', dependent + '/stdout']))
+    # Test exclude_patterns
+    remote_uuid = _run_command(
+        [
+            cl,
+            'run',
+            'echo "hi" > hi.txt ; echo "bye" > bye.txt; echo "goodbye" > goodbye.txt',
+            '--exclude-patterns',
+            '*bye*.txt',
+        ]
+    )
+    wait(remote_uuid)
+    check_num_lines(
+        2 + 2 + 1, _run_command([cl, 'cat', remote_uuid])
+    )  # 2 header lines, 1 stdout file, 1 stderr file, 1 item at bundle target root
 
-    def test_run_sugared():
-        sugared_remote_name = random_name()
-        sugared_remote_uuid = _run_command(
-            [
-                cl,
-                'run',
-                'cat %{}//{}%/stdout'.format(source_worksheet_name, name),
-                '-n',
-                sugared_remote_name,
-                '--request-memory',
-                '10m',
-            ]
-        )
-        wait(sugared_remote_uuid)
-        check_contains(sugared_remote_name, _run_command([cl, 'search', sugared_remote_name]))
-        check_equals(sugared_remote_uuid, _run_command([cl, 'search', sugared_remote_name, '-u']))
-        check_equals('hello', _run_command([cl, 'cat', sugared_remote_uuid + '/stdout']))
+    # Test multiple exclude_patterns
+    remote_uuid = _run_command(
+        [
+            cl,
+            'run',
+            'echo "hi" > hi.txt ; echo "bye" > bye.txt; echo "goodbye" > goodbye.txt',
+            '--exclude-patterns',
+            'bye.txt',
+            'goodbye.txt',
+        ]
+    )
+    wait(remote_uuid)
+    check_num_lines(
+        2 + 2 + 1, _run_command([cl, 'cat', remote_uuid])
+    )  # 2 header lines, 1 stdout file, 1 stderr file, 1 item at bundle target root
 
-    def test_run_multiple_keys():
-        # Test multiple keys pointing to the same bundle
-        multi_alias_uuid = _run_command(
-            [
-                cl,
-                'run',
-                'foo:{}'.format(uuid),
-                'foo1:{}'.format(uuid),
-                'foo2:{}'.format(uuid),
-                'echo "three aliases"',
-                '--request-memory',
-                '10m',
-            ]
-        )
-        wait(multi_alias_uuid)
-        check_equals('three aliases', _run_command([cl, 'cat', multi_alias_uuid + '/stdout']))
-        check_equals('hello', _run_command([cl, 'cat', multi_alias_uuid + '/foo/stdout']))
-        check_equals('hello', _run_command([cl, 'cat', multi_alias_uuid + '/foo1/stdout']))
-        check_equals('hello', _run_command([cl, 'cat', multi_alias_uuid + '/foo2/stdout']))
 
-    run_commands = [
-        test_run_basic,
-        test_run_special_name,
-        test_run_sugared,
-        test_run_multiple_keys,
-    ]
+@TestModule.register('run2')
+def test(ctx):
+    # Test that content of dependency is mounted at the top when . is specified as the dependency key
+    dir3 = _run_command([cl, 'upload', test_path('dir3')])
+    uuid = _run_command([cl, 'run', '.:%s' % dir3, 'cat f1'])
+    wait(uuid)
+    check_equals('first file in dir3', _run_command([cl, 'cat', uuid + '/stdout']))
 
-    def run_run_command(func):
-        f = io.StringIO()
-        with redirect_stdout(f):
-            func()
-        return f.getvalue()
+    uuid = _run_command([cl, 'run', '.:%s' % dir3, 'cat dir1/f1'])
+    wait(uuid)
+    check_equals('first nested file', _run_command([cl, 'cat', uuid + '/stdout']))
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
-        futures = [executor.submit(run_run_command, run_command) for run_command in run_commands]
-    for future in futures:
-        print(future.result())
+    nested_dir = _run_command([cl, 'upload', test_path('dir3/dir1')])
+    uuid = _run_command([cl, 'run', '.:%s' % nested_dir, 'cat f1'])
+    wait(uuid)
+    check_equals('first nested file', _run_command([cl, 'cat', uuid + '/stdout']))
+
+    # Specify a path for the dependency key
+    dir1 = _run_command([cl, 'upload', test_path('dir1')])
+    uuid = _run_command([cl, 'run', 'foo/bar:%s' % dir1, 'foo/bar2:%s' % dir3, 'cat foo/bar/f1'])
+    wait(uuid)
+    check_equals('first file', _run_command([cl, 'cat', uuid + '/stdout']))
+
+    uuid = _run_command([cl, 'run', 'foo/bar:%s' % dir1, 'foo/bar2:%s' % dir3, 'cat foo/bar2/f1'])
+    wait(uuid)
+    check_equals('first file in dir3', _run_command([cl, 'cat', uuid + '/stdout']))
+
+    # Keys can also be absolute paths
+    uuid = _run_command(
+        [cl, 'run', '/foo/bar:%s' % dir1, '/foo/bar2:%s' % dir3, 'cat /foo/bar2/f1']
+    )
+    wait(uuid)
+    check_equals('first file in dir3', _run_command([cl, 'cat', uuid + '/stdout']))
+
+    # Test that backwards compatibility is maintained
+    uuid = _run_command([cl, 'run', 'f1:%s/f1' % dir1, 'foo/bar:%s' % dir1, 'cat f1'])
+    wait(uuid)
+    output = _run_command([cl, 'cat', uuid + '/stdout'])
+    uuid = _run_command([cl, 'run', 'f1:%s/f1' % dir1, 'foo/bar:%s' % dir1, 'cat foo/bar/f1'])
+    wait(uuid)
+    check_equals(output, _run_command([cl, 'cat', uuid + '/stdout']))
+
+    # We currently don't support the case where a dependency key is an ancestor of another. Expect an error.
+    _run_command(
+        [cl, 'run', 'foo:%s' % dir3, 'foo/bar:%s' % dir1, 'cat foo/bar/f1'], expected_exit_code=1
+    )
 
 
 @TestModule.register('read')
@@ -1160,8 +1218,6 @@ def test(ctx):
             'dir:' + dep_uuid,
             'file:' + dep_uuid + '/a.txt',
             'ls dir; cat file; seq 1 10; touch done; while true; do sleep 60; done',
-            '--request-memory',
-            '10m',
         ]
     )
     wait_until_state(uuid, State.RUNNING)
@@ -1301,10 +1357,8 @@ def test(ctx):
     # Another basic test
     uuidA = _run_command([cl, 'upload', test_path('a.txt')])
     uuidB = _run_command([cl, 'upload', test_path('b.txt')])
-    uuidCountA = _run_command(
-        [cl, 'run', 'input:' + uuidA, 'wc -l input', '--request-memory', '10m']
-    )
-    uuidCountB = _run_command([cl, 'mimic', uuidA, uuidB, '--request-memory', '10m'])
+    uuidCountA = _run_command([cl, 'run', 'input:' + uuidA, 'wc -l input'])
+    uuidCountB = _run_command([cl, 'mimic', uuidA, uuidB])
     wait(uuidCountA)
     wait(uuidCountB)
     # Check that the line counts for a.txt and b.txt are correct
@@ -1380,13 +1434,10 @@ def test(ctx):
                 'run',
                 'main.pl:' + uuid,
                 'perl main.pl %s %s %s' % (use_time, use_memory, use_disk),
-                '--request-time',
-                str(request_time),
-                '--request-memory',
-                str(request_memory) + 'm',
-                '--request-disk',
-                str(request_disk) + 'm',
-            ]
+            ],
+            request_time=str(request_time),
+            request_memory=str(request_memory) + 'm',
+            request_disk=str(request_disk) + 'm',
         )
         wait(run_uuid, expected_exit_code)
         if expected_failure_message:
@@ -1396,10 +1447,10 @@ def test(ctx):
     stress(
         use_time=1,
         request_time=10,
-        use_memory=50,
-        request_memory=1000,
-        use_disk=10,
-        request_disk=100,
+        use_memory=1,
+        request_memory=10,
+        use_disk=5,
+        request_disk=10,
         expected_exit_code=0,
         expected_failure_message=None,
     )
@@ -1408,10 +1459,10 @@ def test(ctx):
     stress(
         use_time=10,
         request_time=1,
-        use_memory=50,
-        request_memory=1000,
-        use_disk=10,
-        request_disk=100,
+        use_memory=15,
+        request_memory=10,
+        use_disk=5,
+        request_disk=10,
         expected_exit_code=1,
         expected_failure_message='Time limit exceeded.',
     )
@@ -1423,10 +1474,10 @@ def test(ctx):
 
     # Too much disk
     stress(
-        use_time=2,
+        use_time=1,
         request_time=10,
-        use_memory=50,
-        request_memory=1000,
+        use_memory=1,
+        request_memory=10,
         use_disk=10,
         request_disk=2,
         expected_exit_code=1,
@@ -1488,11 +1539,19 @@ def test(ctx):
         _run_command([cl, 'rm', '-d', uuid])  # Keep only metadata
         _run_command([cl, 'add', 'bundle', uuid, '--dest-worksheet', remote_worksheet])
 
+        # Create at local, transfer to remote (non-terminal state bundle)
+        uuid = _run_command([cl, 'run', 'date', '--request-gpus', '100'])
+        wait_until_state(uuid, State.STAGED)
+
         # Test adding worksheet items
         _run_command([cl, 'wadd', source_worksheet, remote_worksheet])
+        # Bundles copied over to remote_worksheet will not contain the bundle in non-terminal states, e.g. STAGED
+        assert_bundles_ready(remote_worksheet)
+
+        # Remove the STAGED bundle from source_worksheet and verify that all bundles are ready.
+        _run_command([cl, 'rm', uuid])
         _run_command([cl, 'wadd', remote_worksheet, source_worksheet])
         assert_bundles_ready(source_worksheet)
-        assert_bundles_ready(remote_worksheet)
 
 
 @TestModule.register('groups')
@@ -1528,13 +1587,18 @@ def test(ctx):
 @TestModule.register('netcat')
 def test(ctx):
     script_uuid = _run_command([cl, 'upload', test_path('netcat-test.py')])
-    uuid = _run_command([cl, 'run', 'netcat-test.py:' + script_uuid, 'python netcat-test.py'])
+    _run_command([cl, 'info', script_uuid])
+    uuid = _run_command(
+        [cl, 'run', 'netcat-test.py:' + script_uuid, 'python netcat-test.py'], request_memory="10m"
+    )
     wait_until_state(uuid, State.RUNNING)
     time.sleep(5)
     output = _run_command([cl, 'netcat', uuid, '5005', '---', 'hi patrick'])
     check_equals('No, this is dawg', output)
 
-    uuid = _run_command([cl, 'run', 'netcat-test.py:' + script_uuid, 'python netcat-test.py'])
+    uuid = _run_command(
+        [cl, 'run', 'netcat-test.py:' + script_uuid, 'python netcat-test.py'], request_memory="10m"
+    )
     wait_until_state(uuid, State.RUNNING)
     time.sleep(5)
     output = _run_command([cl, 'netcat', uuid, '5005', '---', 'yo dawg!'])
@@ -1543,8 +1607,11 @@ def test(ctx):
 
 @TestModule.register('netcurl')
 def test(ctx):
-    uuid = _run_command([cl, 'run', 'echo hello > hello.txt; python -m SimpleHTTPServer'])
+    uuid = _run_command(
+        [cl, 'run', 'echo hello > hello.txt; python -m SimpleHTTPServer'], request_memory="10m"
+    )
     wait_until_state(uuid, State.RUNNING)
+    time.sleep(10)
     address = ctx.client.address
     check_equals(
         'hello',
@@ -1761,7 +1828,6 @@ def test(ctx):
 
 @TestModule.register('workers')
 def test(ctx):
-    # Run workers command
     result = _run_command([cl, 'workers'])
     lines = result.split("\n")
 
@@ -1780,6 +1846,7 @@ def test(ctx):
             'gpus',
             'memory',
             'free_disk',
+            'exit_after_num_runs',
             'last_checkin',
             'tag',
             'runs',
@@ -1791,7 +1858,7 @@ def test(ctx):
 
     # Check number of not null values. First 7 columns should be not null. Column "tag" and "runs" could be empty.
     worker_info = lines[2].split()
-    check_equals(True, len(worker_info) >= 8)
+    check_equals(True, len(worker_info) >= 9)
 
 
 @TestModule.register('rest1')

@@ -6,37 +6,32 @@ on:
     branches: [ master ]
 
 jobs:
-  format_frontend:
-    name: Format frontend
+  format:
+    name: Format
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v2
       - uses: actions/setup-node@v1
         with:
           node-version: 10.x
-      - run: npm install
+      - name: Set up Python 3.6
+        uses: actions/setup-python@v1
+        with:
+          python-version: 3.6
+      - run: npm ci
         working-directory: ./frontend
       - run: npm run check-ci
         working-directory: ./frontend
         env:
           CI: true
-  format_backend:
-    name: Format backend
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v2
-      - name: Set up Python 3.6
-        uses: actions/setup-python@v1
-        with:
-          python-version: 3.6
       - run: pip install --upgrade black==18.9b0
       - run: black . --check --diff
-  build_backend:
-    name: Build backend
+  build:
+    name: Build
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        service: [rest-server, worker]
+        service: [rest-server, worker, frontend]
     steps:
       - uses: actions/checkout@v2
       - uses: actions/setup-python@v1
@@ -48,37 +43,18 @@ jobs:
           CODALAB_DOCKER_PASSWORD: ${{ secrets.CODALAB_DOCKER_PASSWORD }}
           VERSION: ${{ github.head_ref }}
           SERVICE: ${{ matrix.service }}
-  build_frontend:
-    name: Build frontend
-    runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        service: [frontend]
-    steps:
-      - uses: actions/checkout@v2
-      - uses: actions/setup-python@v1
-        with:
-          python-version: 3.6
-      - run: python3 codalab_service.py build --pull --version ${VERSION} --push -s ${SERVICE}
-        env:
-          CODALAB_DOCKER_USERNAME: ${{ secrets.CODALAB_DOCKER_USERNAME }}
-          CODALAB_DOCKER_PASSWORD: ${{ secrets.CODALAB_DOCKER_PASSWORD }}
-          VERSION: ${{ github.head_ref }}
-          SERVICE: ${{ matrix.service }}
+
   test_backend:
     name: Test backend
     runs-on: ubuntu-latest
-    needs: [build_backend]
+    needs: [build]
     strategy:
       matrix:
-        test: [unittest gen-rest-docs gen-cli-docs gen-readthedocs, upload1, rest1 upload2 upload3 upload4 download refs binary, rm make worksheet_search worksheet_tags, freeze perm, search, run, mimic, batch groups, basic anonymous competition status search_time, worksheets, worksheet detach]
-      fail-fast: false
+        test: [run]
+        # test: [unittest gen-rest-docs gen-cli-docs gen-readthedocs basic status batch anonymous competition unicode rest1 upload1 upload2 upload3 upload4 download refs binary rm make worksheet_search worksheet_tags freeze detach perm search_time groups,search,run,run2,read,kill,write,mimic workers,resources,copy memoize,netcat,netcurl]
     steps:
-      # This step is only needed for tests that use "cl run" to run jobs on workers.
       - name: Clear free space
-        if: ${{ matrix.test == 'run' || matrix.test == 'search' || matrix.test == 'mimic' || matrix.test == 'worksheets' }}
         run: |
-            sudo rm -rf /usr/share/dotnet
             sudo rm -rf /opt/ghc
             df -h
       - uses: actions/checkout@v2
@@ -93,57 +69,17 @@ jobs:
           VERSION: ${{ github.head_ref }}
       - name: Run tests
         run: |
-          python3 codalab_service.py start --services default monitor --version ${VERSION}
-          python3 test_runner.py --version ${VERSION} ${TEST} || python3 test_runner.py --version ${VERSION} ${TEST}
-          # docker restart codalab_worker_1
-          # python3 test_runner.py --version ${VERSION} run
-          # docker stop codalab_worker_1
-          # python3 codalab_service.py start --services init worker --version ${VERSION} --shared-file-system
-          # Run frontend tests + backend test modules that test shared file systems code paths
-          # python3 test_runner.py --version ${TRAVIS_BRANCH} basic run read write kill resources netcat netcurl workers
+          python3 codalab_service.py start --services default --version ${VERSION}
+          python3 test_runner.py --version ${VERSION} ${TEST}
         env:
           TEST: ${{ matrix.test }}
           VERSION: ${{ github.head_ref }}
-      - name: Save logs on failure
+      - name: Save logs
         run: |
           mkdir /tmp/logs
           for c in $(docker ps -a --format="{{.Names}}"); do docker logs $c > /tmp/logs/$c.log 2> /tmp/logs/$c.err; done
-        if: failure()
-      - name: Upload logs on failure
+      - name: Upload logs
         uses: actions/upload-artifact@v1
-        if: failure()
         with:
-          name: logs
+          name: logs-test-${{ matrix.test }}
           path: /tmp/logs
-      
-  test_frontend:
-    name: Test frontend
-    runs-on: ubuntu-latest
-    needs: [build_backend, build_frontend]
-    steps:
-      - uses: actions/checkout@v2
-      - uses: actions/setup-python@v1
-        with:
-          python-version: 3.6
-      - name: Setup tests
-        run: |
-          sudo service mysql stop
-          python3 codalab_service.py pull --version ${VERSION}
-          pip install -r requirements.txt
-          ./scripts/test-setup.sh
-          export PATH=$PATH:/usr/bin/geckodriver
-        env:
-          VERSION: ${{ github.head_ref }}
-      - name: Run tests
-        run: |
-          python3 codalab_service.py start --services default monitor --version ${VERSION}
-          docker exec codalab_rest-server_1 /bin/bash -c "python3 scripts/create_sample_worksheet.py"
-          python3 test_runner.py --version ${VERSION} frontend
-        env:
-          VERSION: ${{ github.head_ref }}
-      - name: Upload screenshots on failure
-        uses: actions/upload-artifact@v1
-        if: failure()
-        with:
-          name: results
-          path: test/ui

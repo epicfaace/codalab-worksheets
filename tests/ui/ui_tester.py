@@ -36,17 +36,19 @@ class UITester(ABC):
             if args.headless:
                 browser_options.add_argument('--headless')
 
-        # Test Firefox
-        options = FirefoxOptions()
-        add_headless(options)
-        self.browser = webdriver.Firefox(log_path='', firefox_options=options)
-        self.test()
-        self.browser.close()
-
         # Test Chrome
         options = ChromeOptions()
         add_headless(options)
         self.browser = webdriver.Chrome(chrome_options=options)
+        # self.browser.implicitly_wait(60)  # 60 seconds
+        self.test()
+        self.browser.close()
+
+        # Test Firefox
+        options = FirefoxOptions()
+        add_headless(options)
+        self.browser = webdriver.Firefox(log_path='', firefox_options=options)
+        # self.browser.implicitly_wait(60)  # 60 seconds
         self.test()
         self.browser.close()
 
@@ -84,7 +86,6 @@ class UITester(ABC):
             self.send_keyboard_shortcut('an')
         else:
             self.expand_last_bundle()
-            self.pause()
             self.scroll_to_bottom('worksheet_container')
             self.click(By.XPATH, "//span[.='Edit and Rerun']")
         self.pause()
@@ -289,6 +290,7 @@ class UITester(ABC):
         element = "document.getElementById('{}')".format(selector)
         scroll_height = float(self.browser.execute_script('return {}.scrollHeight'.format(element)))
         self.browser.execute_script('{}.scrollTo(0, {})'.format(element, scroll_height))
+        # self.pause()
 
     def _get_partial_matched_elements(self, by, selector):
         return self.browser.find_elements(By.XPATH, self.constructPartialSelector(by, selector))
