@@ -42,6 +42,7 @@ class UITester(ABC):
         options.add_argument("--window-size=1500,1200")
         self.browser = webdriver.Chrome(chrome_options=options)
         self.browser.implicitly_wait(10)
+        self.set_browser_size()
         self.test()
         self.browser.close()
 
