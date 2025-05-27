@@ -12,6 +12,7 @@ import string
 import subprocess
 import sys
 import time
+import shlex
 
 
 class TestRunner(object):
@@ -21,7 +22,7 @@ class TestRunner(object):
 
     @staticmethod
     def _docker_exec(command):
-        return 'docker exec codalab_rest-server_1 /bin/bash -c "{}"'.format(command)
+        return ['docker', 'exec', 'codalab_rest-server_1', '/bin/bash', '-c', command]
 
     @staticmethod
     def _create_temp_instance(name, version):
@@ -42,20 +43,15 @@ class TestRunner(object):
 
         try:
             start_time = time.time()
-            subprocess.check_call(
-                ' '.join(
-                    [
-                        'python3',
-                        TestRunner._CODALAB_SERVICE_SCRIPT,
-                        'start',
-                        '--instance-name %s' % name,
-                        '--rest-port %s' % rest_port,
-                        '--version %s' % version,
-                        '--services init ws-server rest-server',
-                    ]
-                ),
-                shell=True,
-            )
+            subprocess.check_call([
+                'python3',
+                TestRunner._CODALAB_SERVICE_SCRIPT,
+                'start',
+                '--instance-name', name,
+                '--rest-port', rest_port,
+                '--version', version,
+                '--services', 'init', 'ws-server', 'rest-server',
+            ])
             print(
                 'It took {} seconds to create the temp instance.'.format(time.time() - start_time)
             )
@@ -97,7 +93,7 @@ class TestRunner(object):
 
                 test_command += ' '.join(non_frontend_tests)
                 print('Running backend tests with command: %s' % test_command)
-                subprocess.check_call(TestRunner._docker_exec(test_command), shell=True)
+                subprocess.check_call(TestRunner._docker_exec(test_command))
 
             # Run frontend tests
             self._run_frontend_tests()
@@ -116,24 +112,19 @@ class TestRunner(object):
         # Execute front end tests here
         print('Running frontend tests...')
         # Run Selenium UI tests
-        subprocess.check_call('python3 tests/ui/ui_tester.py --headless', shell=True)
+        subprocess.check_call(['python3', 'tests/ui/ui_tester.py', '--headless'])
 
     def _cleanup(self):
         if not self.temp_instance_required:
             return
 
         print('Shutting down the temp instance {}...'.format(self.temp_instance_name))
-        subprocess.check_call(
-            ' '.join(
-                [
-                    'python3',
-                    TestRunner._CODALAB_SERVICE_SCRIPT,
-                    'stop',
-                    '--instance-name %s' % self.temp_instance_name,
-                ]
-            ),
-            shell=True,
-        )
+        subprocess.check_call([
+            'python3',
+            TestRunner._CODALAB_SERVICE_SCRIPT,
+            'stop',
+            '--instance-name', self.temp_instance_name,
+        ])
 
 
 if __name__ == '__main__':
